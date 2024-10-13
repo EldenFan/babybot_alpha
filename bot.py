@@ -3,28 +3,22 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm import State, StatesGroup
 import asyncio
 import db
 from config import TOKEN
 from myClass import MyCallback
 import os
+from datetime import datetime
 
 dp = Dispatcher()
 
-# Словарь с вероятностями дропа категорий
-categories = {
-    'good': 0.05,
-    'rare good': 0.45,
-    'rare bad': 0.45,
-    'bad': 0.05
-}
 
 # Выбор категории
-def choose_category() -> str:
-    categories_list = list(categories.keys())
-    probabilities = list(categories.values())
-    return random.choices(categories_list, probabilities)[0]
+async def choose_category() -> int:
+    good, rare_good, rare_bad, bad = await db.get_categories()
+    categories_arr = [good[0], rare_good[0], rare_bad[0], bad[0]]
+    probabilities = [good[2], rare_good[2], rare_bad[2], bad[2]]
+    return random.choices(categories_arr, probabilities)[0]
 
 
 # Создать бд, если её нет
@@ -34,7 +28,7 @@ async def on_start() -> None:
 
 
 # Функция проверки наличия пользователя в бд
-async def check_user_in_db(user_id) -> tuple:
+async def check_user_in_db(user_id) -> bool:
     return await db.user_exists(user_id)
 
 
@@ -50,57 +44,40 @@ async def start_command(message: types.Message) -> None:
 @dp.message(Command("baby"))
 async def send_baby_photo(message: types.Message) -> None:
     user_id = message.from_user.id
+    username = message.from_user.username
 
     # Проверяем, зарегистрирован ли пользователь
     is_user_registered = await db.user_exists(user_id)
     if not is_user_registered:
-        await message.answer("Вы не зарегистрированы. Пожалуйста, нажмите /start, чтобы зарегистрироваться.")
+        await message.reply("Вы не зарегистрированы. Пожалуйста, нажмите /start, чтобы зарегистрироваться.")
         return
-
+    message_time = await db.when_user_can_send_message(user_id)
+    if datetime.now() < datetime.fromisoformat(message_time):
+        await message.reply(
+            f"Остынь, @{username},\nПопробуй чуть позже, например через {(message_time - datetime.now()).seconds} сек"
+            f"\n\nP.s. сократить кд можно с помощью /brutforce")
+        return
     category = choose_category()
-    photo_data = await db.get_random(category)
-
-    # Проверка выдали нам фото (Если уверен убери сам if, но оставь саму логику внутри if, и все else)
-    if photo_data:
-        photo_id, category, photo_path, rating, votes = photo_data
-
-        caption = f"Категория: {category}\nСредний рейтинг: {rating:.2f} (Голосов: {votes})"
-
-        markup = InlineKeyboardMarkup()
-        for i in range(1, 6):
-            markup.add(InlineKeyboardButton(
-                str(i),
-                callback_data=MyCallback(rating=i, photo_id=photo_id, user_id=user_id)
-            ))
-
-        with open(photo_path, 'rb') as photo:
-            await message.answer_photo(photo, caption=caption, reply_markup=markup)
+    photos_ids = await db.get_photos_from_category(category, user_id)
+    photo_id = random.choice(photos_ids)[0]
+    photo_path = await db.get_path(photo_id)
+    if category == 1:
+        await message.reply_photo(photo_path, caption = 'Поздравляю, у тебя явно есть удача\nСегодня без кд\n\n+100 babyCoin')
+    elif category == 2:
+        await message.reply_photo(photo_path, caption='Знаешь, могло быть и хуже, сиди учи(\nЛови кд на 60 секунд\n\n+1 babyCoin') # Придумай чет новое
+    elif category == 3:
+        await message.reply_photo(photo_path, caption = 'ААААА женщина\nДумаю 30 секунд тебе хватит\n\n+5 babyCoin') # Придумай чет новое
+    elif category == 4:
+        await message.reply_photo(photo_path, caption= 'Капец ты лохопендр\nЛови кд на 2 минуты\n\n-100 babyCoin')
     else:
-        await message.answer("Фото в этой категории не найдено.")
+        await message.answer("Ты как сюда попал?")
 
-
+'''
 # Нажатие на рейтинг
 @dp.callback_query(MyCallback.filter())
 async def vote_callback(call: types.CallbackQuery, callback_data: MyCallback) -> None:
-    user_id = call.from_user.id
-    rating = int(callback_data.rating)
-    photo_id = int(callback_data.photo_id)
-    original_user_id = int(callback_data.user_id)
+'''
 
-    # Проверка, совпадает ли ID пользователя, который пытается проголосовать, с тем, кому показывалось фото
-    if user_id != original_user_id:
-        await call.answer("Вы не можете голосовать за это фото, так как оно было показано другому пользователю.",
-                          show_alert=True)
-        return
-
-    # Добавляем голос
-    await db.add_vote(user_id, photo_id, rating)
-
-    # Получаем обновленный рейтинг и количество голосов
-    updated_rating, updated_votes = await db.get_photo_rating(photo_id)
-
-    # Ответ пользователю с новым рейтингом
-    await call.answer(f"Спасибо за ваш голос! Новый рейтинг: {updated_rating:.2f} (Голосов: {updated_votes})")
 
 
 async def main() -> None:
